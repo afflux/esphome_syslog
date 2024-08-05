@@ -2,6 +2,7 @@
 
 #include "esphome/core/log.h"
 #include "esphome/core/application.h"
+#include "esphome/core/version.h"
 
 #ifdef USE_LOGGER
 #include "esphome/components/logger/logger.h"
@@ -9,7 +10,6 @@
 /*
 #include "esphome/core/helpers.h"
 #include "esphome/core/defines.h"
-#include "esphome/core/version.h"
 */
 
 namespace esphome {
@@ -27,8 +27,37 @@ SyslogComponent::SyslogComponent() {
 
 void SyslogComponent::setup() {
 
-    this->server_socklen = socket::set_sockaddr((struct sockaddr *)&this->server, sizeof(this->server),
-                                                this->settings_.address, this->settings_.port);
+    /*
+     * Older versions of socket::set_sockaddr() return bogus results
+     * if trying to log to a Legacy IP address when IPv6 is enabled.
+     * Fixed by https://github.com/esphome/esphome/pull/7196
+     */
+    this->server_socklen = 0;
+    if (ESPHOME_VERSION_CODE >= VERSION_CODE(2024, 8, 0)) {
+        this->server_socklen = socket::set_sockaddr((struct sockaddr *)&this->server, sizeof(this->server),
+                                                    this->settings_.address, this->settings_.port);
+    }
+#if USE_NETWORK_IPV6
+    else if (this->settings_.address.find(':') != std::string::npos) {
+        auto *server6 = reinterpret_cast<sockaddr_in6 *>(&this->server);
+        memset(server6, 0, sizeof(*server6));
+        server6->sin6_family = AF_INET6;
+        server6->sin6_port = htons(this->settings_.port);
+
+        ip6_addr_t ip6;
+        inet6_aton(this->settings_.address.c_str(), &ip6);
+        memcpy(server6->sin6_addr.un.u32_addr, ip6.addr, sizeof(ip6.addr));
+        this->server_socklen = sizeof(*server6);
+    }
+#endif /* USE_NETWORK_IPV6 */
+    else {
+        auto *server4 = reinterpret_cast<sockaddr_in *>(&this->server);
+        memset(server4, 0, sizeof(*server4));
+        server4->sin_family = AF_INET;
+        server4->sin_addr.s_addr = inet_addr(this->settings_.address.c_str());
+        server4->sin_port = htons(this->settings_.port);
+        this->server_socklen = sizeof(*server4);
+    }
     if (!this->server_socklen) {
         ESP_LOGW(TAG, "Failed to parse server IP address '%s'", this->settings_.address.c_str());
         return;
