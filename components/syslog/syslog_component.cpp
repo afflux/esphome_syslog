@@ -27,6 +27,11 @@ SyslogComponent::SyslogComponent() {
 
 void SyslogComponent::setup() {
 
+#ifdef USE_SOCKET_IMPL_LWIP_TCP
+    server = IPAddress();
+    server.fromString(this->settings_.address.c_str());
+#else
+
     /*
      * Older versions of socket::set_sockaddr() return bogus results
      * if trying to log to a Legacy IP address when IPv6 is enabled.
@@ -59,14 +64,17 @@ void SyslogComponent::setup() {
         this->server_socklen = sizeof(*server4);
     }
     if (!this->server_socklen) {
-        ESP_LOGW(TAG, "Failed to parse server IP address '%s'", this->settings_.address.c_str());
+        ESP_LOGE(TAG, "Failed to parse server IP address '%s'", this->settings_.address.c_str());
+        this->mark_failed();
         return;
     }
     this->socket_ = socket::socket(this->server.ss_family, SOCK_DGRAM, IPPROTO_UDP);
     if (!this->socket_) {
-        ESP_LOGW(TAG, "Failed to create UDP socket");
+        ESP_LOGE(TAG, "Failed to create UDP socket");
+        this->mark_failed();
         return;
     }
+#endif
 
     this->log(ESPHOME_LOG_LEVEL_INFO , "syslog", "Syslog started");
     ESP_LOGI(TAG, "Started");
@@ -90,20 +98,40 @@ void SyslogComponent::loop() {
 }
 
 void SyslogComponent::log(uint8_t level, const std::string &tag, const std::string &payload) {
+    if (this->is_failed()) {
+        return;
+    }
+
     level = level > 7 ? 7 : level;
 
+#ifndef USE_SOCKET_IMPL_LWIP_TCP
     if (!this->socket_) {
         ESP_LOGW(TAG, "Tried to send \"%s\"@\"%s\" with level %d but socket isn't connected", tag.c_str(), payload.c_str(), level);
         return;
     }
+#endif
 
     int pri = esphome_to_syslog_log_levels[level];
     std::string buf = str_sprintf("<%d>1 - %s %s - - - \xEF\xBB\xBF%s",
                                   pri, this->settings_.client_id.c_str(),
                                   tag.c_str(), payload.c_str());
-    if (this->socket_->sendto(buf.c_str(), buf.length(), 0, (struct sockaddr *)&this->server, this->server_socklen) < 0) {
+    if (this->send(buf) < 0) {
         ESP_LOGW(TAG, "Tried to send \"%s\"@\"%s\" with level %d but but failed for an unknown reason", tag.c_str(), payload.c_str(), level);
     }
+}
+
+ssize_t SyslogComponent::send(std::string buf) {
+#ifdef USE_SOCKET_IMPL_LWIP_TCP
+    if (this->udp_client_.beginPacket(this->server, this->settings_.port) == 0)
+        return -1;
+
+    this->udp_client_.write((const uint8_t *) buf.c_str(), buf.size());
+    if (this->udp_client_.endPacket() != 1)
+        return -1;
+    return buf.size();
+#else
+    return this->socket_->sendto(buf.c_str(), buf.length(), 0, (struct sockaddr *)&this->server, this->server_socklen);
+#endif
 }
 
 float SyslogComponent::get_setup_priority() const {

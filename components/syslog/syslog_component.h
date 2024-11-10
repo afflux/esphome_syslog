@@ -1,12 +1,14 @@
 #pragma once
-#ifndef SYSLOG_COMPONENT_H_0504CB6C_15D8_4AB4_A04C_8AF9063B737F
-#define SYSLOG_COMPONENT_H_0504CB6C_15D8_4AB4_A04C_8AF9063B737F
 
 #include "esphome/core/component.h"
 #include "esphome/core/defines.h"
 #include "esphome/core/automation.h"
 #include "esphome/core/log.h"
 #include "esphome/components/socket/socket.h"
+
+#ifdef USE_SOCKET_IMPL_LWIP_TCP
+#include <WiFiUdp.h>
+#endif
 
 namespace esphome {
 namespace syslog {
@@ -41,10 +43,16 @@ class SyslogComponent : public Component  {
     protected:
         bool strip_colors;
         bool enable_logger;
+        ssize_t send(std::string buf);
         SYSLOGSettings settings_;
+#ifdef USE_SOCKET_IMPL_LWIP_TCP
+        IPAddress server{};
+        WiFiUDP udp_client_{};
+#else
         std::unique_ptr<socket::Socket> socket_ = nullptr;
         struct sockaddr_storage server;
         socklen_t server_socklen;
+#endif
 };
 
 template<typename... Ts> class SyslogLogAction : public Action<Ts...> {
@@ -64,5 +72,3 @@ template<typename... Ts> class SyslogLogAction : public Action<Ts...> {
 
 }  // namespace syslog
 }  // namespace esphome
-
-#endif
